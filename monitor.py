@@ -55,22 +55,20 @@ def parse_name2(s):
             return (cs[ep:].decode(), num)
 
 def parse_info(d):
-    info = {}
     if d['card']:
         raw = d['card']
     else:
         raw = d['nickname']
     name1, id1 = parse_name(raw)
     name2, id2 = parse_name2(raw)
-    uid = int(d['user_id'])
     if id1 == -1 and id2 == -1:
-        info[uid] = raw
+        res = raw
     else:
         if id1 == -1:
-            info[uid] = {"name":name2, "id": id2}
+            res = {"name":name2, "id": id2}
         else:
-            info[uid] = {"name":name1, "id": id1}
-    return info
+            res = {"name":name1, "id": id1}
+    return res
 
 def parse_infos(data):
     info = {}
@@ -124,22 +122,44 @@ class Monitor:
         self.logger.addHandler(fh)
         self.logger.addHandler(sh)
 
-    def update(self):
+    async def update(self):
         today = datetime.datetime.now().date()
         if today != self.today:
-            self.gen_excel()
+            await self.gen_excel()
             self.logger.info(f"已更新报表")
             self.today = today
             self.logger.info(f"日期更新至:{self.today}")
             self.clockin_db = shelve.open(self.subdir(today_str()))
 
-    def gen_excel(self):
-        dbs = glob.glob(self.subdir('*.dat'))
+    async def gen_excel(self):
+        gname = (await self.bot.get_group_info(group_id=self.gid))['group_name']
+        header = ["日期/ID"]
+        mp = {}
+        for i,(uid, info) in enumerate(self.user_info_db.items()):
+            if type(info) == dict:
+                info = info['name']
+            header.append(info)
+            mp[uid] = i + 1
+
         wb = openpyxl.Workbook()
-        tb = wb.create_sheet(title='打卡统计', index=0)
-        for raw_name in dbs:
-            name = raw_name.rstrip('.dat')
-            clockin = shelve.open(name)
+        tb = wb.create_sheet(index=0, title="打卡统计")
+        tb.append(header)
+
+        fs = glob.glob(self.subdir(r'[0-9][0-9]-[0-9][0-9].dat'))
+        for fn in fs:
+            dbn = fn[:-4]
+            clockin_db = shelve.open(dbn)
+            dbn = dbn[-5:]
+            self.logger.debug(f"处理数据 {dbn}")
+            row = [dbn]
+            row.extend([0] * len(self.user_info_db))
+            for k, v in clockin_db.items():
+                row[mp[k]] = v
+            tb.append(row)
+        wb.save(f"{gname}.xlsx")
+        self.logger.info(f"报表生成，文件名：{gname}.xlsx")
+        await self.bot.send_private_msg(user_id=996344439, message=f"报表已生成，文件名：{gname}.xlsx")
+
 
     async def handle(self, event:Event):
         logger = self.logger
@@ -159,8 +179,8 @@ class Monitor:
             logger.debug(f"成员信息已更新：{self.user_info_db[str(uid)]}")
             if seg.type == "image":
                 if not seg.data['file'].endswith('.gif'):
+                    await self.update()
                     logger.info(f"{event.user_id} 图片打卡")
-                    self.update()
                     db = self.clockin_db
                     if str(uid) in db:
                         db[str(uid)] += 1
